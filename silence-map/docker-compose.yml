@@ -1,0 +1,54 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: silence-map-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: silence_map
+    ports:
+      - "5432:5432"
+    volumes:
+      - silence-postgres-data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d silence_map"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - silence-net
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: silence-map-api
+    environment:
+      HTTP_ADDR: ":8080"
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: silence_map
+      DB_SSLMODE: disable
+      APP_TIMEZONE: America/Sao_Paulo
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    networks:
+      - silence-net
+
+volumes:
+  silence-postgres-data:
+
+networks:
+  silence-net:
+    driver: bridge
