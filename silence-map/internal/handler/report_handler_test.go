@@ -16,8 +16,9 @@ import (
 )
 
 type handlerFakeRepo struct {
-	createdReport  *domain.Report
-	lastQuietQuery usecase.QuietPlaceQuery
+	createdReport   *domain.Report
+	lastQuietQuery  usecase.QuietPlaceQuery
+	lastRecentQuery usecase.RecentReportsQuery
 }
 
 func (f *handlerFakeRepo) CreateReport(_ context.Context, report *domain.Report) error {
@@ -36,7 +37,8 @@ func (f *handlerFakeRepo) ConfirmReport(context.Context, string, string) (*domai
 	}, nil
 }
 
-func (f *handlerFakeRepo) ListRecentReports(context.Context, usecase.RecentReportsQuery) ([]domain.Report, error) {
+func (f *handlerFakeRepo) ListRecentReports(_ context.Context, query usecase.RecentReportsQuery) ([]domain.Report, error) {
+	f.lastRecentQuery = query
 	return nil, nil
 }
 
@@ -88,6 +90,44 @@ func TestFindQuietPlacesParsesBoundsIntoUsecase(t *testing.T) {
 	}
 }
 
+func TestFindQuietPlacesAcceptsBoundsOnlyQuery(t *testing.T) {
+	repo := &handlerFakeRepo{}
+	router := testRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/places/quiet?lat=-23.55&lng=-46.63&radius=0&day_of_week=1&hour=15&north=-22.8&south=-24.3&east=-45.9&west=-47.4", nil)
+	res := httptest.NewRecorder()
+
+	router.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if repo.lastQuietQuery.RadiusMeters != 0 {
+		t.Fatalf("radius = %v, want 0", repo.lastQuietQuery.RadiusMeters)
+	}
+	if repo.lastQuietQuery.Bounds == nil {
+		t.Fatal("bounds were not passed to usecase")
+	}
+}
+
+func TestRecentReportsAcceptsBoundsOnlyQuery(t *testing.T) {
+	repo := &handlerFakeRepo{}
+	router := testRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/reports/recent?lat=-23.55&lng=-46.63&radius=0&north=-22.8&south=-24.3&east=-45.9&west=-47.4", nil)
+	res := httptest.NewRecorder()
+
+	router.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if repo.lastRecentQuery.RadiusMeters != 0 {
+		t.Fatalf("radius = %v, want 0", repo.lastRecentQuery.RadiusMeters)
+	}
+	if repo.lastRecentQuery.Bounds == nil {
+		t.Fatal("bounds were not passed to usecase")
+	}
+}
+
 func TestCreateReportUsesTrustedSessionIdentity(t *testing.T) {
 	repo := &handlerFakeRepo{}
 	router := testRouter(repo)
@@ -127,6 +167,29 @@ func TestInvalidBoundsReturnsBadRequest(t *testing.T) {
 	}
 	if payload["error"] == "" {
 		t.Fatal("missing error message")
+	}
+}
+
+func TestRateLimitKeysIncludeIdentityAndNormalizedIPSignals(t *testing.T) {
+	reqA := httptest.NewRequest(http.MethodPost, "/api/reports", nil)
+	reqA.Header.Set("X-Forwarded-For", "203.0.113.10")
+	reqB := httptest.NewRequest(http.MethodPost, "/api/reports", nil)
+	reqB.Header.Set("X-Forwarded-For", "203.0.113.10")
+	reqC := httptest.NewRequest(http.MethodPost, "/api/reports", nil)
+	reqC.Header.Set("X-Forwarded-For", "203.0.113.11")
+
+	keysA := rateLimitKeys(reqA, "report")
+	keysB := rateLimitKeys(reqB, "report")
+	keysC := rateLimitKeys(reqC, "report")
+
+	if len(keysA) != 2 {
+		t.Fatalf("keys = %v, want identity and IP keys", keysA)
+	}
+	if keysA[0] != keysB[0] || keysA[1] != keysB[1] {
+		t.Fatal("same identity/IP signal produced different rate limit keys")
+	}
+	if keysA[1] == keysC[1] {
+		t.Fatal("different IP signals produced the same IP rate limit key")
 	}
 }
 

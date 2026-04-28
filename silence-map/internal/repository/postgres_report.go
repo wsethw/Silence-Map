@@ -111,10 +111,13 @@ func (r *PostgresReportRepository) ListRecentReports(ctx context.Context, q usec
 		LEFT JOIN confirmations c ON c.report_id = r.id
 		WHERE
 			r.created_at >= NOW() - INTERVAL '2 hours'
-			AND ST_DWithin(
-				r.location,
-				ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography,
-				$3
+			AND (
+				$3::double precision = 0
+				OR ST_DWithin(
+					r.location,
+					ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography,
+					$3
+				)
 			)
 			AND (
 				$5::boolean = false
@@ -192,10 +195,13 @@ func (r *PostgresReportRepository) FindQuietPlaces(ctx context.Context, query us
 			LEFT JOIN confirmations c ON c.report_id = r.id
 			WHERE
 				r.created_at >= NOW() - INTERVAL '24 hours'
-				AND ST_DWithin(
-					r.location,
-					ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography,
-					$3
+				AND (
+					$3::double precision = 0
+					OR ST_DWithin(
+						r.location,
+						ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography,
+						$3
+					)
 				)
 				AND (
 					$8::boolean = false

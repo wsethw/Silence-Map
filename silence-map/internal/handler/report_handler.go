@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -65,7 +67,7 @@ func (h *ReportHandler) createReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := requestUserID(r)
-	if !h.reportLimiter.Allow("report:" + userID) {
+	if !allowWrite(h.reportLimiter, r, "report") {
 		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 		return
 	}
@@ -94,7 +96,7 @@ func (h *ReportHandler) confirmReport(w http.ResponseWriter, r *http.Request) {
 
 	reportID := chi.URLParam(r, "id")
 	userID := requestUserID(r)
-	if !h.confirmLimiter.Allow("confirm:" + userID) {
+	if !allowWrite(h.confirmLimiter, r, "confirm") {
 		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 		return
 	}
@@ -323,7 +325,50 @@ func requestUserID(r *http.Request) string {
 	if userID != "" {
 		return userID
 	}
-	return fmt.Sprintf("anon-ip-%s", r.RemoteAddr)
+	return "anon-ip-" + hashedClientIP(r)
+}
+
+func allowWrite(limiter *ratelimit.Limiter, r *http.Request, action string) bool {
+	for _, key := range rateLimitKeys(r, action) {
+		if !limiter.Allow(key) {
+			return false
+		}
+	}
+	return true
+}
+
+func rateLimitKeys(r *http.Request, action string) []string {
+	return []string{
+		action + ":identity:" + requestUserID(r),
+		action + ":ip:" + hashedClientIP(r),
+	}
+}
+
+func hashedClientIP(r *http.Request) string {
+	sum := sha256.Sum256([]byte(normalizedClientIP(r)))
+	return hex.EncodeToString(sum[:8])
+}
+
+func normalizedClientIP(r *http.Request) string {
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		first := strings.TrimSpace(strings.Split(forwarded, ",")[0])
+		if ip := net.ParseIP(first); ip != nil {
+			return ip.String()
+		}
+	}
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		if ip := net.ParseIP(realIP); ip != nil {
+			return ip.String()
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	return "unknown"
 }
 
 func writeUseCaseError(w http.ResponseWriter, err error) {

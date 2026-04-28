@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"math"
 	"strings"
 	"time"
 
@@ -168,19 +169,34 @@ func validateSearch(latitude, longitude, radiusMeters float64, bounds *domain.Bo
 	if err := validatePoint(latitude, longitude); err != nil {
 		return err
 	}
-	if radiusMeters <= 0 {
-		return domain.NewValidationError("radius", "must be greater than zero")
+	if bounds != nil && !bounds.Valid() {
+		return domain.NewValidationError("bounds", "must be a valid north/south/east/west viewport")
+	}
+	if math.IsNaN(radiusMeters) || math.IsInf(radiusMeters, 0) {
+		return domain.NewValidationError("radius", "must be a finite number")
+	}
+	if radiusMeters < 0 {
+		return domain.NewValidationError("radius", "must be zero for bounds-only search or greater than zero")
+	}
+	if radiusMeters == 0 {
+		if bounds == nil {
+			return domain.NewValidationError("radius", "must be greater than zero unless valid bounds are provided")
+		}
+		return nil
 	}
 	if radiusMeters > 50000 {
 		return domain.NewValidationError("radius", "must be at most 50000 meters")
-	}
-	if bounds != nil && !bounds.Valid() {
-		return domain.NewValidationError("bounds", "must be a valid north/south/east/west viewport")
 	}
 	return nil
 }
 
 func validatePoint(latitude, longitude float64) error {
+	if math.IsNaN(latitude) || math.IsInf(latitude, 0) {
+		return domain.NewValidationError("latitude", "must be a finite number")
+	}
+	if math.IsNaN(longitude) || math.IsInf(longitude, 0) {
+		return domain.NewValidationError("longitude", "must be a finite number")
+	}
 	if latitude < -90 || latitude > 90 {
 		return domain.NewValidationError("latitude", "must be between -90 and 90")
 	}

@@ -61,13 +61,17 @@ func TestCreateReportValidation(t *testing.T) {
 func TestListRecentReportsValidation(t *testing.T) {
 	uc := NewReportUseCase(&fakeReportRepo{}, nil, "UTC")
 
-	_, err := uc.ListRecentReports(context.Background(), RecentReportsQuery{
-		Latitude:     -23.5,
-		Longitude:    -46.6,
-		RadiusMeters: 50001,
-	})
-	if !errors.Is(err, domain.ErrValidation) {
-		t.Fatalf("ListRecentReports radius error = %v, want validation", err)
+	tests := []RecentReportsQuery{
+		{Latitude: -23.5, Longitude: -46.6, RadiusMeters: 50001},
+		{Latitude: -23.5, Longitude: -46.6, RadiusMeters: 0},
+		{Latitude: -91, Longitude: -46.6, RadiusMeters: 5000},
+	}
+
+	for _, query := range tests {
+		_, err := uc.ListRecentReports(context.Background(), query)
+		if !errors.Is(err, domain.ErrValidation) {
+			t.Fatalf("ListRecentReports(%+v) error = %v, want validation", query, err)
+		}
 	}
 }
 
@@ -108,11 +112,66 @@ func TestFindQuietPlacesPassesBounds(t *testing.T) {
 	}
 }
 
+func TestFindQuietPlacesAcceptsBoundsOnlyForLargeViewport(t *testing.T) {
+	repo := &fakeReportRepo{}
+	uc := NewReportUseCase(repo, nil, "UTC")
+	bounds := &domain.Bounds{North: -22.8, South: -24.3, East: -45.9, West: -47.4}
+
+	if _, err := uc.FindQuietPlaces(context.Background(), QuietPlaceQuery{
+		Latitude:     -23.55,
+		Longitude:    -46.63,
+		RadiusMeters: 0,
+		Bounds:       bounds,
+		DayOfWeek:    6,
+		Hour:         15,
+	}); err != nil {
+		t.Fatalf("FindQuietPlaces bounds-only error = %v", err)
+	}
+
+	if repo.lastQuietQuery.RadiusMeters != 0 {
+		t.Fatalf("radius = %v, want bounds-only radius 0", repo.lastQuietQuery.RadiusMeters)
+	}
+	if repo.lastQuietQuery.Bounds == nil || *repo.lastQuietQuery.Bounds != *bounds {
+		t.Fatalf("bounds = %+v, want %+v", repo.lastQuietQuery.Bounds, bounds)
+	}
+}
+
+func TestListRecentReportsAcceptsBoundsOnlyForLargeViewport(t *testing.T) {
+	repo := &fakeReportRepo{}
+	uc := NewReportUseCase(repo, nil, "UTC")
+	bounds := &domain.Bounds{North: -22.8, South: -24.3, East: -45.9, West: -47.4}
+
+	if _, err := uc.ListRecentReports(context.Background(), RecentReportsQuery{
+		Latitude:     -23.55,
+		Longitude:    -46.63,
+		RadiusMeters: 0,
+		Bounds:       bounds,
+	}); err != nil {
+		t.Fatalf("ListRecentReports bounds-only error = %v", err)
+	}
+
+	if repo.lastRecentQuery.RadiusMeters != 0 {
+		t.Fatalf("radius = %v, want bounds-only radius 0", repo.lastRecentQuery.RadiusMeters)
+	}
+	if repo.lastRecentQuery.Bounds == nil || *repo.lastRecentQuery.Bounds != *bounds {
+		t.Fatalf("bounds = %+v, want %+v", repo.lastRecentQuery.Bounds, bounds)
+	}
+}
+
 func TestConfirmReportPropagatesDuplicate(t *testing.T) {
 	uc := NewReportUseCase(&fakeReportRepo{confirmErr: domain.ErrDuplicateConfirmation}, nil, "UTC")
 
 	_, err := uc.ConfirmReport(context.Background(), "report-1", "user-1")
 	if !errors.Is(err, domain.ErrDuplicateConfirmation) {
 		t.Fatalf("ConfirmReport error = %v, want duplicate", err)
+	}
+}
+
+func TestConfirmReportPropagatesSelfConfirmation(t *testing.T) {
+	uc := NewReportUseCase(&fakeReportRepo{confirmErr: domain.ErrSelfConfirmation}, nil, "UTC")
+
+	_, err := uc.ConfirmReport(context.Background(), "report-1", "user-1")
+	if !errors.Is(err, domain.ErrSelfConfirmation) {
+		t.Fatalf("ConfirmReport error = %v, want self-confirmation", err)
 	}
 }
