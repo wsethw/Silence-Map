@@ -39,18 +39,3 @@ AS $$
                 ) * 0.5
         END
 $$;
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS place_aggregates AS
-SELECT
-    EXTRACT(ISODOW FROM created_at AT TIME ZONE 'America/Sao_Paulo')::SMALLINT AS day_of_week,
-    EXTRACT(HOUR FROM created_at AT TIME ZONE 'America/Sao_Paulo')::SMALLINT AS hour,
-    ST_SnapToGrid(location::geometry, 0.001) AS grid_cell,
-    COUNT(*)::INTEGER AS report_count,
-    AVG(quietness_level)::DOUBLE PRECISION AS avg_quietness,
-    MAX(created_at) AS last_report_at
-FROM reports
-GROUP BY day_of_week, hour, grid_cell
-WITH DATA;
-
-CREATE INDEX IF NOT EXISTS idx_place_aggregates_grid ON place_aggregates USING GIST (grid_cell);
-CREATE INDEX IF NOT EXISTS idx_place_aggregates_time ON place_aggregates (day_of_week, hour);

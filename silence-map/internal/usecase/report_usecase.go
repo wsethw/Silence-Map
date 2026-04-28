@@ -12,7 +12,7 @@ import (
 type ReportRepository interface {
 	CreateReport(ctx context.Context, report *domain.Report) error
 	ConfirmReport(ctx context.Context, reportID, userID string) (*domain.Report, error)
-	ListRecentReports(ctx context.Context, latitude, longitude, radiusMeters float64, limit int) ([]domain.Report, error)
+	ListRecentReports(ctx context.Context, query RecentReportsQuery) ([]domain.Report, error)
 	FindQuietPlaces(ctx context.Context, query QuietPlaceQuery) ([]domain.QuietPlace, error)
 }
 
@@ -39,10 +39,19 @@ type QuietPlaceQuery struct {
 	Latitude     float64
 	Longitude    float64
 	RadiusMeters float64
+	Bounds       *domain.Bounds
 	DayOfWeek    int
 	Hour         int
 	Limit        int
 	TimeZone     string
+}
+
+type RecentReportsQuery struct {
+	Latitude     float64
+	Longitude    float64
+	RadiusMeters float64
+	Bounds       *domain.Bounds
+	Limit        int
 }
 
 func NewReportUseCase(repo ReportRepository, publisher EventPublisher, timeZone string) *ReportUseCase {
@@ -124,16 +133,19 @@ func (uc *ReportUseCase) ConfirmReport(ctx context.Context, reportID, userID str
 	return report, nil
 }
 
-func (uc *ReportUseCase) ListRecentReports(ctx context.Context, latitude, longitude, radiusMeters float64) ([]domain.Report, error) {
-	if err := validateSearch(latitude, longitude, radiusMeters); err != nil {
+func (uc *ReportUseCase) ListRecentReports(ctx context.Context, query RecentReportsQuery) ([]domain.Report, error) {
+	if err := validateSearch(query.Latitude, query.Longitude, query.RadiusMeters, query.Bounds); err != nil {
 		return nil, err
 	}
+	if query.Limit <= 0 || query.Limit > 2000 {
+		query.Limit = 2000
+	}
 
-	return uc.repo.ListRecentReports(ctx, latitude, longitude, radiusMeters, 2000)
+	return uc.repo.ListRecentReports(ctx, query)
 }
 
 func (uc *ReportUseCase) FindQuietPlaces(ctx context.Context, query QuietPlaceQuery) ([]domain.QuietPlace, error) {
-	if err := validateSearch(query.Latitude, query.Longitude, query.RadiusMeters); err != nil {
+	if err := validateSearch(query.Latitude, query.Longitude, query.RadiusMeters, query.Bounds); err != nil {
 		return nil, err
 	}
 	if query.DayOfWeek < 1 || query.DayOfWeek > 7 {
@@ -152,7 +164,7 @@ func (uc *ReportUseCase) FindQuietPlaces(ctx context.Context, query QuietPlaceQu
 	return uc.repo.FindQuietPlaces(ctx, query)
 }
 
-func validateSearch(latitude, longitude, radiusMeters float64) error {
+func validateSearch(latitude, longitude, radiusMeters float64, bounds *domain.Bounds) error {
 	if err := validatePoint(latitude, longitude); err != nil {
 		return err
 	}
@@ -161,6 +173,9 @@ func validateSearch(latitude, longitude, radiusMeters float64) error {
 	}
 	if radiusMeters > 50000 {
 		return domain.NewValidationError("radius", "must be at most 50000 meters")
+	}
+	if bounds != nil && !bounds.Valid() {
+		return domain.NewValidationError("bounds", "must be a valid north/south/east/west viewport")
 	}
 	return nil
 }

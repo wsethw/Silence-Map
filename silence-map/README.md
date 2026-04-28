@@ -1,81 +1,162 @@
-# Mapa de Silencio Colaborativo
+# Silence Map
 
-Projeto de portfolio senior em Go, PostGIS e WebSocket para mapear silencio urbano em tempo real.
+Silence Map is a collaborative geospatial demo where people report how quiet a public place feels right now. The backend is a single Go service with clean internal boundaries, PostgreSQL/PostGIS for spatial queries, and WebSocket updates for live collaboration. The frontend is dependency-light HTML/CSS/JavaScript with Leaflet and a dark glassmorphism dashboard UI.
 
-## Por que Go
+## What It Demonstrates
 
-Go combina baixa latencia, binario unico e concorrencia nativa. Para este produto, isso importa porque cada conexao WebSocket pode ficar aberta por muito tempo enquanto a API REST continua recebendo reports e confirmacoes. Goroutines e channels deixam o hub em tempo real simples, barato e previsivel.
+- PostGIS geography queries with `ST_DWithin` and viewport bounding boxes.
+- Realtime updates through an in-memory WebSocket hub.
+- Time decay for reports so old noise/quietness data does not dominate current results.
+- Anonymous signed-cookie demo identity instead of trusting arbitrary `user_id` values.
+- Rate limiting for report creation and confirmations.
+- Responsive accessible map UI with keyboard-friendly modal behavior.
 
-## Por que PostGIS
+## Architecture
 
-PostGIS e melhor que MongoDB ou Elasticsearch para este nucleo porque consultas como "pontos em ate 5km", indices GIST em geografia, `ST_DWithin`, `ST_X`, `ST_Y` e agregacoes espaciais sao nativas no PostgreSQL. O modelo tambem precisa de integridade: UUIDs, foreign keys, `UNIQUE (report_id, user_id)` e transacoes ACID evitam confirmacoes duplicadas e dados quebrados.
+```text
+cmd/server        HTTP server bootstrap, DB pool, router, graceful shutdown
+internal/domain   Report, Confirmation, Point, Bounds, validation primitives
+internal/usecase  Application rules and query contracts
+internal/handler  REST handlers, request parsing, rate limiting
+internal/repository Postgres/PostGIS SQL implementation
+internal/websocket In-memory live update hub
+internal/identity Signed anonymous demo session middleware
+web/              Leaflet frontend and static checks
+db/init.sql       PostGIS schema
+```
 
-## Confiabilidade do mapa
+The WebSocket hub is intentionally in-memory for a portfolio monolith. A horizontally scaled production version would move fanout through Redis Pub/Sub, NATS, or PostgreSQL `LISTEN/NOTIFY`.
 
-Cada report nasce com peso 1. Confirmacoes aumentam o peso colaborativo, mas um usuario nao pode confirmar o proprio report nem votar duas vezes no mesmo report. O banco aplica decaimento temporal com a funcao `temporal_decay`: reports ate 2 horas mantem peso 1.0, entre 2h e 24h caem gradualmente ate 0.5, e depois de 24h deixam de influenciar consultas de agora. Assim, um report antigo e isolado nao domina a regiao.
-
-## Decisao sobre agregacao
-
-O schema inclui a materialized view `place_aggregates` como ponto de partida para evoluir performance em alto volume. A API atual usa agregacao on-the-fly com `ST_DWithin` e `ST_SnapToGrid`, porque isso mantem a recomendacao sensivel a confirmacoes e ao decaimento em tempo real. Em producao, um job periodico poderia atualizar a view e o endpoint poderia combinar a view com reports recentes.
-
-## Rodando
+## Run With Docker Compose
 
 ```powershell
 cd C:\Users\codwj\OneDrive\Documentos\Project-04\silence-map
 docker compose up --build
 ```
 
-Abra [http://localhost:8080](http://localhost:8080).
+Open [http://localhost:8080](http://localhost:8080).
 
-## Teste por API
+Health endpoints:
 
-Crie cinco reports em Sao Paulo:
+- `GET /healthz` returns when the HTTP server is alive.
+- `GET /readyz` also checks database readiness.
 
-```powershell
-curl.exe -s -X POST http://localhost:8080/api/reports -H "Content-Type: application/json" -d "{\"user_id\":\"u1\",\"latitude\":-23.5505,\"longitude\":-46.6333,\"quietness\":5,\"place_name\":\"Praça da Sé\"}"
-curl.exe -s -X POST http://localhost:8080/api/reports -H "Content-Type: application/json" -d "{\"user_id\":\"u2\",\"latitude\":-23.5489,\"longitude\":-46.6388,\"quietness\":4,\"place_name\":\"Café Maravilha\"}"
-curl.exe -s -X POST http://localhost:8080/api/reports -H "Content-Type: application/json" -d "{\"user_id\":\"u3\",\"latitude\":-23.5614,\"longitude\":-46.6559,\"quietness\":2,\"place_name\":\"Avenida Paulista\"}"
-curl.exe -s -X POST http://localhost:8080/api/reports -H "Content-Type: application/json" -d "{\"user_id\":\"u4\",\"latitude\":-23.5570,\"longitude\":-46.6605,\"quietness\":5,\"place_name\":\"Biblioteca silenciosa\"}"
-curl.exe -s -X POST http://localhost:8080/api/reports -H "Content-Type: application/json" -d "{\"user_id\":\"u5\",\"latitude\":-23.5432,\"longitude\":-46.6291,\"quietness\":3,\"place_name\":\"Rua movimentada\"}"
-```
+## Local Development
 
-Capture um ID e confirme:
+Copy `.env.example` to `.env` if you want to run the binary directly. The compose file sets the same values for the container.
 
 ```powershell
-$report = curl.exe -s -X POST http://localhost:8080/api/reports -H "Content-Type: application/json" -d "{\"user_id\":\"autor\",\"latitude\":-23.5505,\"longitude\":-46.6333,\"quietness\":5,\"place_name\":\"Ponto para confirmar\"}" | ConvertFrom-Json
-curl.exe -s -X POST "http://localhost:8080/api/reports/$($report.id)/confirm" -H "Content-Type: application/json" -d "{\"user_id\":\"confirmador-1\"}"
+go mod tidy
+go run ./cmd/server
 ```
 
-Consulte reports recentes:
+The frontend can also be opened as `web/index.html`; in that mode it falls back to `http://localhost:8080` for REST and `ws://localhost:8080/ws` for realtime.
+
+## API Examples
+
+Create a report. The body may include `user_id` for backward compatibility, but the server ignores it and uses a signed anonymous session cookie.
+
+```powershell
+curl.exe -i -X POST http://localhost:8080/api/reports `
+  -H "Content-Type: application/json" `
+  -d "{\"latitude\":-23.5505,\"longitude\":-46.6333,\"quietness\":5,\"place_name\":\"Central Library\"}"
+```
+
+Confirm a report:
+
+```powershell
+curl.exe -X POST http://localhost:8080/api/reports/<REPORT_ID>/confirm
+```
+
+Recent reports in a radius:
 
 ```powershell
 curl.exe "http://localhost:8080/api/reports/recent?lat=-23.5505&lng=-46.6333&radius=5000"
 ```
 
-Consulte lugares silenciosos usando o dia e hora atuais:
+Recent reports constrained to a viewport:
 
 ```powershell
-$now = Get-Date
-$isoDay = [int]$now.DayOfWeek
-if ($isoDay -eq 0) { $isoDay = 7 }
-curl.exe "http://localhost:8080/api/places/quiet?lat=-23.5505&lng=-46.6333&radius=5000&day_of_week=$isoDay&hour=$($now.Hour)"
+curl.exe "http://localhost:8080/api/reports/recent?lat=-23.5505&lng=-46.6333&radius=5000&north=-23.4&south=-23.7&east=-46.5&west=-46.8"
 ```
 
-Exemplo para sabado as 15h:
+Quiet-place search for the visible area:
 
 ```powershell
-curl.exe "http://localhost:8080/api/places/quiet?lat=-23.5505&lng=-46.6333&radius=5000&day_of_week=6&hour=15"
+curl.exe "http://localhost:8080/api/places/quiet?lat=-23.5505&lng=-46.6333&radius=5000&north=-23.4&south=-23.7&east=-46.5&west=-46.8&day_of_week=6&hour=15"
 ```
 
-## Teste no navegador
+Bounds are optional, but when used all four values (`north`, `south`, `east`, `west`) must be sent together.
 
-1. Abra `http://localhost:8080`.
-2. Clique no mapa e envie um report com nivel de silencio.
-3. Abra outra aba no mesmo endereco.
-4. Mova as duas abas para a mesma regiao do mapa.
-5. Envie um report ou confirme um ponto em uma aba.
-6. A outra aba recebe `new_report` ou `confirmation` via WebSocket se o ponto estiver dentro do bounding box visivel.
+## WebSocket Example
 
-## Limite conhecido
+Connect to:
 
-O hub WebSocket e em memoria, ideal para um monolito de portfolio. Para escalar horizontalmente, varios processos Go precisariam compartilhar eventos por Redis Pub/Sub, NATS ou PostgreSQL `LISTEN/NOTIFY`, mantendo o filtro por bounding box em cada instancia.
+```text
+ws://localhost:8080/ws
+```
+
+Subscribe to the current map viewport:
+
+```json
+{
+  "action": "subscribe",
+  "bounds": {
+    "north": -23.4,
+    "south": -23.7,
+    "east": -46.5,
+    "west": -46.8
+  }
+}
+```
+
+Events:
+
+```json
+{ "type": "new_report", "report": { "...": "..." } }
+{ "type": "confirmation", "report_id": "...", "quietness": 5, "confirmations": 3 }
+```
+
+## Geospatial Notes
+
+PostGIS stores report locations as `GEOGRAPHY(POINT, 4326)`, so radius filtering uses meters. Quiet-place ranking first applies the requested radius, then optionally constrains results to the exact viewport envelope. The query groups reports into roughly 100-meter city-level grid cells using `ST_SnapToGrid(..., 0.001)`, which is a deliberate demo tradeoff: simple, explainable clustering without adding H3 or another dependency.
+
+Reports newer than 2 hours keep full freshness weight. Reports between 2 and 24 hours decay gradually toward half weight. Reports older than 24 hours are ignored by current quiet-place queries.
+
+## Testing
+
+```powershell
+go test ./...
+node web/index.test.js
+```
+
+Or:
+
+```powershell
+make test
+```
+
+The Go tests cover validation, bounds parsing, trusted demo identity, rate limiting, and usecase behavior. The frontend static test checks JavaScript syntax, dark map tiles, viewport bounds requests, WebSocket URL behavior, focus-trap presence, debounced reload behavior, English UI text, and avoidance of dynamic `innerHTML` assignments.
+
+## Troubleshooting
+
+- If the map does not show, check browser network requests to `basemaps.cartocdn.com`.
+- If the status says `Reconnecting...`, the Go server or `/ws` endpoint is not reachable.
+- If Docker health checks fail, run `docker compose logs -f api db` and check `/readyz`.
+- If a direct `file://` open cannot create reports, ensure the backend is running on `localhost:8080`.
+
+## Production-Like vs Demo-Only
+
+Production-like:
+
+- PostGIS spatial filtering.
+- Signed anonymous session cookies.
+- REST validation and safe error responses.
+- Rate limiting for write endpoints.
+- Graceful HTTP shutdown and readiness checks.
+
+Demo-only:
+
+- Anonymous identity is not full authentication.
+- WebSocket fanout is single-instance in memory.
+- The frontend includes demo markers so portfolio screenshots look useful before any community data exists.

@@ -62,7 +62,7 @@ func NewHub() *Hub {
 			WriteBufferSize: 1024,
 			CheckOrigin: func(r *http.Request) bool {
 				origin := r.Header.Get("Origin")
-				if origin == "" {
+				if origin == "" || origin == "null" {
 					return true
 				}
 				originURL, err := url.Parse(origin)
@@ -168,12 +168,18 @@ func (c *Client) readPump() {
 	})
 
 	for {
-		var msg clientMessage
-		if err := c.conn.ReadJSON(&msg); err != nil {
+		_, payload, err := c.conn.ReadMessage()
+		if err != nil {
 			if gws.IsUnexpectedCloseError(err, gws.CloseGoingAway, gws.CloseAbnormalClosure) {
 				log.Printf("websocket: read: %v", err)
 			}
 			return
+		}
+
+		var msg clientMessage
+		if err := json.Unmarshal(payload, &msg); err != nil {
+			c.queueError("invalid_json", "message must be valid JSON")
+			continue
 		}
 
 		if msg.Action == "subscribe" && msg.Bounds.Valid() {
@@ -181,7 +187,10 @@ func (c *Client) readPump() {
 			c.bounds = msg.Bounds
 			c.subscribed = true
 			c.mu.Unlock()
+			continue
 		}
+
+		c.queueError("invalid_subscription", "expected subscribe action with valid bounds")
 	}
 }
 
@@ -232,4 +241,21 @@ func eventPoint(event Event) *domain.Point {
 		return &event.Report.Location
 	}
 	return nil
+}
+
+func (c *Client) queueError(code, message string) {
+	payload, err := json.Marshal(map[string]string{
+		"type":    "error",
+		"code":    code,
+		"message": message,
+	})
+	if err != nil {
+		return
+	}
+
+	select {
+	case c.send <- payload:
+	default:
+		c.hub.unregister <- c
+	}
 }

@@ -1,4 +1,4 @@
-.PHONY: tidy fmt test build run up down logs db-refresh
+.PHONY: tidy fmt test frontend-test build run up down logs
 
 tidy:
 	go mod tidy
@@ -8,6 +8,10 @@ fmt:
 
 test:
 	go test ./...
+	node web/index.test.js
+
+frontend-test:
+	node web/index.test.js
 
 build:
 	go build ./cmd/server
@@ -23,6 +27,3 @@ down:
 
 logs:
 	docker compose logs -f api db
-
-db-refresh:
-	docker compose exec db psql -U postgres -d silence_map -c "REFRESH MATERIALIZED VIEW place_aggregates;"

@@ -94,8 +94,8 @@ func (r *PostgresReportRepository) ConfirmReport(ctx context.Context, reportID, 
 	return &report, nil
 }
 
-func (r *PostgresReportRepository) ListRecentReports(ctx context.Context, latitude, longitude, radiusMeters float64, limit int) ([]domain.Report, error) {
-	const query = `
+func (r *PostgresReportRepository) ListRecentReports(ctx context.Context, q usecase.RecentReportsQuery) ([]domain.Report, error) {
+	const sqlQuery = `
 		SELECT
 			r.id,
 			r.user_id,
@@ -116,12 +116,30 @@ func (r *PostgresReportRepository) ListRecentReports(ctx context.Context, latitu
 				ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography,
 				$3
 			)
+			AND (
+				$5::boolean = false
+				OR ST_Intersects(
+					r.location::geometry,
+					ST_MakeEnvelope($6, $7, $8, $9, 4326)
+				)
+			)
 		GROUP BY r.id
 		ORDER BY r.created_at DESC
 		LIMIT $4
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, latitude, longitude, radiusMeters, limit)
+	hasBounds, west, south, east, north := boundsArgs(q.Bounds)
+	rows, err := r.db.QueryContext(ctx, sqlQuery,
+		q.Latitude,
+		q.Longitude,
+		q.RadiusMeters,
+		q.Limit,
+		hasBounds,
+		west,
+		south,
+		east,
+		north,
+	)
 	if err != nil {
 		return nil, mapPostgresError(err)
 	}
@@ -147,7 +165,7 @@ func (r *PostgresReportRepository) FindQuietPlaces(ctx context.Context, query us
 		WITH report_scores AS (
 			SELECT
 				r.id,
-				COALESCE(NULLIF(r.place_name, ''), 'Local sem nome') AS place_name,
+				COALESCE(NULLIF(r.place_name, ''), 'Unnamed place') AS place_name,
 				ST_SnapToGrid(r.location::geometry, 0.001) AS grid_point,
 				r.created_at,
 				r.quietness_level::float AS quietness,
@@ -179,6 +197,13 @@ func (r *PostgresReportRepository) FindQuietPlaces(ctx context.Context, query us
 					ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography,
 					$3
 				)
+				AND (
+					$8::boolean = false
+					OR ST_Intersects(
+						r.location::geometry,
+						ST_MakeEnvelope($9, $10, $11, $12, 4326)
+					)
+				)
 			GROUP BY r.id
 		),
 		place_scores AS (
@@ -209,6 +234,7 @@ func (r *PostgresReportRepository) FindQuietPlaces(ctx context.Context, query us
 		LIMIT $7
 	`
 
+	hasBounds, west, south, east, north := boundsArgs(query.Bounds)
 	rows, err := r.db.QueryContext(
 		ctx,
 		sqlQuery,
@@ -219,6 +245,11 @@ func (r *PostgresReportRepository) FindQuietPlaces(ctx context.Context, query us
 		query.Hour,
 		query.TimeZone,
 		query.Limit,
+		hasBounds,
+		west,
+		south,
+		east,
+		north,
 	)
 	if err != nil {
 		return nil, mapPostgresError(err)
@@ -248,6 +279,13 @@ func (r *PostgresReportRepository) FindQuietPlaces(ctx context.Context, query us
 	}
 
 	return places, nil
+}
+
+func boundsArgs(bounds *domain.Bounds) (bool, float64, float64, float64, float64) {
+	if bounds == nil {
+		return false, 0, 0, 0, 0
+	}
+	return true, bounds.West, bounds.South, bounds.East, bounds.North
 }
 
 const selectReportByIDSQL = `

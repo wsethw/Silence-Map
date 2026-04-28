@@ -1027,8 +1027,11 @@
   <script>
     const SAO_PAULO = [-23.5505, -46.6333];
     const MAX_RADIUS_METERS = 50000;
-    const API_BASE_URL = location.protocol === 'file:' ? 'http://localhost:8080' : '';
-    const WS_URL = location.protocol === 'https:' ? `wss://${location.host}/ws` : 'ws://localhost:8080/ws';
+    const IS_FILE_PROTOCOL = location.protocol === 'file:';
+    const API_BASE_URL = IS_FILE_PROTOCOL ? 'http://localhost:8080' : '';
+    const WS_URL = IS_FILE_PROTOCOL
+      ? 'ws://localhost:8080/ws'
+      : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
     const QUIETNESS_COLORS = {
       1: '#ff4444',
       2: '#ff8800',
@@ -1123,6 +1126,9 @@
     let socket = null;
     let reconnectTimer = null;
     let reconnectAttempt = 0;
+    let viewportReloadTimer = null;
+    let lastRecentLoadID = 0;
+    let previouslyFocusedElement = null;
 
     const map = L.map('map', {
       zoomControl: false,
@@ -1157,6 +1163,8 @@
 
     map.on('moveend zoomend', () => {
       subscribeVisibleBounds();
+      scheduleViewportReload();
+      updateSummaryStats();
     });
 
     elements.searchQuiet.addEventListener('click', queryQuietPlaces);
@@ -1166,6 +1174,7 @@
     elements.reportModal.addEventListener('click', event => {
       if (event.target === elements.reportModal) closeReportModal();
     });
+    elements.reportModal.addEventListener('keydown', trapModalFocus);
     elements.quietnessSlider.addEventListener('input', updateQuietnessReadout);
     elements.mobileToggle.addEventListener('click', toggleMobilePanel);
     document.addEventListener('keydown', event => {
@@ -1199,7 +1208,7 @@
     function upsertReport(report, options = {}) {
       if (!report || !report.id || !report.location) return;
 
-      const normalized = normalizeReport(report);
+      const normalized = normalizeReport(report, options.source);
       reportsByID.set(normalized.id, normalized);
 
       const color = quietnessColor(normalized.quietness_level);
@@ -1219,7 +1228,7 @@
         existing.setLatLng(latLng);
         existing.setStyle(markerOptions);
         existing.setTooltipContent(tooltipText(normalized));
-        existing.setPopupContent(popupHTML(normalized));
+        existing.setPopupContent(createPopupContent(normalized));
       } else {
         const marker = L.circleMarker(latLng, markerOptions)
           .bindTooltip(tooltipText(normalized), {
@@ -1227,13 +1236,13 @@
             direction: 'top',
             offset: [0, -10]
           })
-          .bindPopup(popupHTML(normalized))
+          .bindPopup(createPopupContent(normalized))
           .addTo(map);
 
         marker.on('popupopen', event => {
           const popupEl = event.popup.getElement();
-          const button = popupEl && popupEl.querySelector(`[data-confirm-report="${normalized.id}"]`);
-          if (button) {
+          const button = popupEl && popupEl.querySelector('button[data-confirm-report]');
+          if (button && button.dataset.confirmReport === normalized.id) {
             button.addEventListener('click', () => confirmReport(normalized.id), { once: true });
           }
         });
@@ -1244,7 +1253,7 @@
       updateSummaryStats();
     }
 
-    function normalizeReport(report) {
+    function normalizeReport(report, source) {
       return {
         id: report.id,
         user_id: report.user_id || 'unknown',
@@ -1255,7 +1264,8 @@
         quietness_level: Math.max(1, Math.min(5, Math.round(Number(report.quietness_level || report.quietness || 3)))),
         place_name: report.place_name || 'Unnamed place',
         confirmations: Number(report.confirmations || report.confirmation_count || 0),
-        created_at: report.created_at || new Date().toISOString()
+        created_at: report.created_at || new Date().toISOString(),
+        source: source || report.source || 'api'
       };
     }
 
@@ -1263,19 +1273,38 @@
       return `${report.place_name} — Silence ${report.quietness_level}`;
     }
 
-    function popupHTML(report) {
+    function createPopupContent(report) {
       const color = quietnessColor(report.quietness_level);
-      return `
-        <div class="popup-actions">
-          <span class="popup-title">${escapeHTML(report.place_name)}</span>
-          <span class="popup-meta">Silence <strong style="color:${color}">${report.quietness_level}/5</strong> · ${report.confirmations} confirmations</span>
-          <button class="primary-action" type="button" data-confirm-report="${escapeHTML(report.id)}">Confirm quietness</button>
-        </div>
-      `;
+      const root = document.createElement('div');
+      root.className = 'popup-actions';
+
+      const title = document.createElement('span');
+      title.className = 'popup-title';
+      title.textContent = report.place_name;
+
+      const meta = document.createElement('span');
+      meta.className = 'popup-meta';
+      meta.append('Silence ');
+      const score = document.createElement('strong');
+      score.style.color = color;
+      score.textContent = `${report.quietness_level}/5`;
+      meta.append(score, ` · ${report.confirmations} confirmations`);
+
+      const button = document.createElement('button');
+      button.className = 'primary-action';
+      button.type = 'button';
+      button.dataset.confirmReport = report.id;
+      button.textContent = 'Confirm quietness';
+
+      root.append(title, meta, button);
+      return root;
     }
 
     function updateSummaryStats() {
-      const reports = Array.from(reportsByID.values());
+      const bounds = map.getBounds();
+      const reports = Array.from(reportsByID.values()).filter(report => {
+        return bounds.contains([report.location.latitude, report.location.longitude]);
+      });
       const total = reports.length;
       const average = total === 0
         ? 0
@@ -1287,7 +1316,7 @@
 
     async function queryQuietPlaces() {
       setButtonLoading(elements.searchQuiet, true);
-      elements.resultsList.innerHTML = '<div class="empty-state">Searching quiet places in the visible region...</div>';
+      renderEmptyState(elements.resultsList, 'Searching quiet places in the visible region...');
 
       const viewport = getViewportQuery();
       const params = new URLSearchParams({
@@ -1311,7 +1340,7 @@
         if (fallback.length > 0) {
           renderQuietResults(fallback, viewport.center, 'Backend unavailable. Showing local demo data.');
         } else {
-          elements.resultsList.innerHTML = '<div class="empty-state">No quiet places found.</div>';
+          renderEmptyState(elements.resultsList, 'No quiet places found.');
         }
       } finally {
         setButtonLoading(elements.searchQuiet, false);
@@ -1320,11 +1349,11 @@
 
     function renderQuietResults(places, center, note = '') {
       if (!places || places.length === 0) {
-        elements.resultsList.innerHTML = '<div class="empty-state">No quiet places found.</div>';
+        renderEmptyState(elements.resultsList, 'No quiet places found.');
         return;
       }
 
-      elements.resultsList.innerHTML = '';
+      clearElement(elements.resultsList);
       if (note) {
         const noteEl = document.createElement('div');
         noteEl.className = 'empty-state';
@@ -1340,22 +1369,51 @@
         const item = document.createElement('button');
         item.type = 'button';
         item.className = 'result-item';
-        item.innerHTML = `
-          <span class="result-swatch" style="background:${color}; color:${color}"></span>
-          <span class="result-copy">
-            <span class="result-title">${escapeHTML(normalized.place_name)}</span>
-            <span class="result-meta">${formatDistance(distance)} · ${normalized.report_count} reports</span>
-          </span>
-          <span class="result-score">
-            <strong style="color:${color}">${normalized.average_quietness.toFixed(1)}</strong>
-            <span>/ 5</span>
-          </span>
-        `;
+
+        const swatch = document.createElement('span');
+        swatch.className = 'result-swatch';
+        swatch.style.background = color;
+        swatch.style.color = color;
+
+        const copy = document.createElement('span');
+        copy.className = 'result-copy';
+        const title = document.createElement('span');
+        title.className = 'result-title';
+        title.textContent = normalized.place_name;
+        const meta = document.createElement('span');
+        meta.className = 'result-meta';
+        meta.textContent = `${formatDistance(distance)} · ${normalized.report_count} reports`;
+        copy.append(title, meta);
+
+        const score = document.createElement('span');
+        score.className = 'result-score';
+        const scoreValue = document.createElement('strong');
+        scoreValue.style.color = color;
+        scoreValue.textContent = normalized.average_quietness.toFixed(1);
+        const scoreSuffix = document.createElement('span');
+        scoreSuffix.textContent = '/ 5';
+        score.append(scoreValue, scoreSuffix);
+
+        item.append(swatch, copy, score);
         item.addEventListener('click', () => {
           map.setView([normalized.location.latitude, normalized.location.longitude], Math.max(map.getZoom(), 15), { animate: true });
         });
         elements.resultsList.appendChild(item);
       });
+    }
+
+    function renderEmptyState(container, message) {
+      clearElement(container);
+      const empty = document.createElement('div');
+      empty.className = 'empty-state';
+      empty.textContent = message;
+      container.appendChild(empty);
+    }
+
+    function clearElement(element) {
+      while (element.firstChild) {
+        element.removeChild(element.firstChild);
+      }
     }
 
     function normalizeQuietPlace(place) {
@@ -1382,10 +1440,11 @@
     }
 
     function openReportModal(latLng) {
+      previouslyFocusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       elements.modalLocation.textContent = `${latLng.lat.toFixed(5)}, ${latLng.lng.toFixed(5)}`;
       elements.reportModal.classList.add('open');
       elements.reportModal.setAttribute('aria-hidden', 'false');
-      elements.placeName.focus();
+      requestAnimationFrame(() => elements.placeName.focus());
     }
 
     function closeReportModal() {
@@ -1395,6 +1454,49 @@
       elements.quietnessSlider.value = '4';
       selectedLatLng = null;
       updateQuietnessReadout();
+      if (previouslyFocusedElement && document.contains(previouslyFocusedElement)) {
+        previouslyFocusedElement.focus();
+      }
+      previouslyFocusedElement = null;
+    }
+
+    function trapModalFocus(event) {
+      if (event.key === 'Escape') {
+        closeReportModal();
+        return;
+      }
+      if (event.key !== 'Tab') {
+        return;
+      }
+
+      const focusable = getFocusableElements(elements.reportModal);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    function getFocusableElements(root) {
+      return Array.from(root.querySelectorAll([
+        'a[href]',
+        'button:not([disabled])',
+        'input:not([disabled])',
+        'select:not([disabled])',
+        'textarea:not([disabled])',
+        '[tabindex]:not([tabindex="-1"])'
+      ].join(','))).filter(element => {
+        return element instanceof HTMLElement && element.offsetParent !== null;
+      });
     }
 
     async function submitReport(event) {
@@ -1415,7 +1517,7 @@
         created_at: new Date().toISOString()
       };
 
-      upsertReport(optimisticReport);
+      upsertReport(optimisticReport, { source: 'local' });
       closeReportModal();
 
       try {
@@ -1431,7 +1533,7 @@
           })
         });
         removeReport(optimisticReport.id);
-        upsertReport(saved);
+        upsertReport(saved, { source: 'api' });
       } catch (error) {
         // Offline-friendly behavior: the optimistic point stays visible for the portfolio demo.
       } finally {
@@ -1450,19 +1552,43 @@
     }
 
     async function loadRecentReports() {
+      const loadID = ++lastRecentLoadID;
       const viewport = getViewportQuery();
       const params = new URLSearchParams({
         lat: String(viewport.center.lat),
         lng: String(viewport.center.lng),
-        radius: String(viewport.radius)
+        radius: String(viewport.radius),
+        north: String(viewport.bounds.getNorth()),
+        south: String(viewport.bounds.getSouth()),
+        east: String(viewport.bounds.getEast()),
+        west: String(viewport.bounds.getWest())
       });
 
       try {
         const reports = await fetchJSON(`${API_BASE_URL}/api/reports/recent?${params.toString()}`);
-        reports.forEach(report => upsertReport(report));
+        if (loadID !== lastRecentLoadID) return;
+
+        const seenAPIReports = new Set();
+        reports.forEach(report => {
+          seenAPIReports.add(report.id);
+          upsertReport(report, { source: 'api' });
+        });
+
+        for (const report of reportsByID.values()) {
+          if (report.source === 'api' && !seenAPIReports.has(report.id)) {
+            removeReport(report.id);
+          }
+        }
+        updateSummaryStats();
       } catch (error) {
         // The demo points keep the map valuable even when the backend is not running.
+        updateSummaryStats();
       }
+    }
+
+    function scheduleViewportReload() {
+      clearTimeout(viewportReloadTimer);
+      viewportReloadTimer = setTimeout(loadRecentReports, 300);
     }
 
     function connectWebSocket() {
@@ -1481,10 +1607,10 @@
         try {
           const payload = JSON.parse(event.data);
           if (payload.type === 'new_report' && payload.report) {
-            upsertReport(payload.report);
+            upsertReport(payload.report, { source: 'api' });
           }
           if (payload.type === 'confirmation' && payload.report) {
-            upsertReport(payload.report);
+            upsertReport(payload.report, { source: 'api' });
           }
         } catch (error) {
           // Ignore malformed realtime events without affecting the map.
@@ -1545,7 +1671,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ user_id: userId })
         });
-        upsertReport(saved);
+        upsertReport(saved, { source: 'api' });
       } catch (error) {
         // Keep optimistic confirmation visible if the backend is unavailable.
       }

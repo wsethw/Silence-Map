@@ -7,9 +7,10 @@ import (
 )
 
 type Config struct {
-	HTTPAddr    string
-	DatabaseURL string
-	AppTimeZone string
+	HTTPAddr      string
+	DatabaseURL   string
+	AppTimeZone   string
+	SessionSecret string
 
 	DBHost     string
 	DBPort     string
@@ -21,14 +22,15 @@ type Config struct {
 
 func Load() Config {
 	cfg := Config{
-		HTTPAddr:    getenv("HTTP_ADDR", ":8080"),
-		AppTimeZone: getenv("APP_TIMEZONE", "America/Sao_Paulo"),
-		DBHost:      getenv("DB_HOST", "localhost"),
-		DBPort:      getenv("DB_PORT", "5432"),
-		DBUser:      getenv("DB_USER", "postgres"),
-		DBPassword:  getenv("DB_PASSWORD", "postgres"),
-		DBName:      getenv("DB_NAME", "silence_map"),
-		DBSSLMode:   getenv("DB_SSLMODE", "disable"),
+		HTTPAddr:      getenv("HTTP_ADDR", ":8080"),
+		AppTimeZone:   getenv("APP_TIMEZONE", "America/Sao_Paulo"),
+		SessionSecret: os.Getenv("SESSION_SECRET"),
+		DBHost:        getenv("DB_HOST", "localhost"),
+		DBPort:        getenv("DB_PORT", "5432"),
+		DBUser:        getenv("DB_USER", "postgres"),
+		DBPassword:    getenv("DB_PASSWORD", "postgres"),
+		DBName:        getenv("DB_NAME", "silence_map"),
+		DBSSLMode:     getenv("DB_SSLMODE", "disable"),
 	}
 
 	cfg.DatabaseURL = os.Getenv("DATABASE_URL")

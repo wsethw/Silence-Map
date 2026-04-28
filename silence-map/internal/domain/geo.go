@@ -18,7 +18,9 @@ func (b Bounds) Valid() bool {
 		b.North <= 90 &&
 		b.South >= -90 &&
 		b.East <= 180 &&
-		b.West >= -180
+		b.West >= -180 &&
+		b.North != b.South &&
+		b.East != b.West
 }
 
 func (b Bounds) Contains(p Point) bool {
