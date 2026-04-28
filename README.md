@@ -325,7 +325,7 @@ The layout accounts for:
 ### 1. Clone the repository
 
 ```bash
-git clone https://https://github.com/wsethw/Silence-Map
+git clone https://github.com/wsethw/Silence-Map
 cd silence-map
 ```
 
@@ -657,32 +657,6 @@ These boundaries are intentional to keep the project focused, understandable, an
 
 ---
 
-## Suggested Screenshots
-
-Add screenshots or GIFs in:
-
-```text
-docs/assets/
-```
-
-Recommended files:
-
-```text
-docs/assets/silence-map-desktop.png
-docs/assets/silence-map-mobile.png
-docs/assets/report-modal.png
-docs/assets/realtime-demo.gif
-```
-
-Then include them here:
-
-```md
-![Silence Map Desktop](docs/assets/silence-map-desktop.png)
-![Silence Map Mobile](docs/assets/silence-map-mobile.png)
-```
-
----
-
 ## Roadmap
 
 The project is already suitable for portfolio presentation. Future production-grade extensions could include:
@@ -697,26 +671,6 @@ The project is already suitable for portfolio presentation. Future production-gr
 * Prometheus/Grafana observability
 * Playwright end-to-end test suite
 * Kubernetes deployment manifests
-
----
-
-## Why This Project Belongs in a Portfolio
-
-Silence Map demonstrates practical engineering ability across multiple areas:
-
-* backend API design
-* geospatial data modeling
-* realtime communication
-* frontend UX
-* accessibility
-* security awareness
-* responsive design
-* database querying
-* Docker-based development
-* product thinking
-
-It is not just technically interesting.
-It solves a clear human problem.
 
 ---
 
